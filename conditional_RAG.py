@@ -19,14 +19,14 @@ def build_retriever(pdf_path: str):
     loader = PyPDFLoader(pdf_path)
     document = loader.load()
 
-    splitter = RecursiveCharacterTextSplitter(chunk_size = 800, chunk_overlap = 100)
+    splitter = RecursiveCharacterTextSplitter(chunk_size = 500, chunk_overlap = 50)
 
     chunks = splitter.split_documents(document)
 
     vectorstore = FAISS.from_documents(chunks,embedding)
 
 
-    return vectorstore.as_retriever(search_kwargs = {"k":4})
+    return vectorstore.as_retriever(search_kwargs = {"k":2})
 
 academic_retriever = build_retriever(pdf_path="academics_handbook.pdf")
 fee_retriever = build_retriever(pdf_path="fee_structure.pdf")
@@ -80,19 +80,157 @@ def classifier_node(state: State) -> dict:
     return {"query_type" : category}
 
 def academic_rag_node(state: State) -> dict:
-    """Retrieves relevant chunks from the academics handbook."""
+    """Retrieves and filters relevant academic information."""
+
     query = state["messages"][-1].content
-    docs = academic_retriever.invoke(query)
-    context = "\n\n".join([doc.page_content for doc in docs])
-    return {"retrieved_context": context}
+    programme = state.get("programme", "Unknown")
+
+    print("\n========== ACADEMIC RAG NODE ==========")
+    print("Original Query:", query)
+    print("Programme:", programme)
+
+    retrieval_query = f"""
+    {programme} college academic rules
+    {query}
+    grading system marking scheme CPI division passing criteria
+    """
+
+    print("Retrieval Query:", retrieval_query)
+
+    docs = academic_retriever.invoke(retrieval_query)
+
+    print("Documents retrieved:", len(docs))
+
+    raw_context = "\n\n".join(
+        doc.page_content for doc in docs
+    )
+
+    for i, doc in enumerate(docs):
+        print(f"\n--- RESULT {i + 1} ---")
+        print(doc.page_content[:1500])
+
+    # ---------------------------------------
+    # Filter grading section when relevant
+    # ---------------------------------------
+
+    grading_keywords = [
+        "marking",
+        "marks",
+        "grading",
+        "grade",
+        "cpi",
+        "division",
+        "passing",
+        "pass"
+    ]
+
+    if any(word in query.lower() for word in grading_keywords):
+
+        start = raw_context.find("4. Grading System")
+
+        if start != -1:
+
+            # Find next major section
+            next_section = raw_context.find(
+                "\n5.",
+                start + len("4. Grading System")
+            )
+
+            if next_section != -1:
+                context = raw_context[start:next_section]
+            else:
+                context = raw_context[start:]
+
+        else:
+            context = raw_context
+
+    else:
+        context = raw_context
+
+    print("\n========== FINAL ACADEMIC CONTEXT ==========")
+    print(context)
+
+    print("\nContext length:", len(context))
+
+    return {
+        "retrieved_context": context
+    }
+
 
 
 def fee_rag_node(state: State) -> dict:
-    """Retrieves relevant chunks from the fee structure PDF."""
+    """Retrieves and filters the relevant programme fee section."""
+
     query = state["messages"][-1].content
+    programme = state.get("programme", "Unknown")
+
+    print("\n========== FEE RAG NODE ==========")
+    print("Original Query:", query)
+    print("Programme:", programme)
+
+    # Retrieve relevant chunks
     docs = fee_retriever.invoke(query)
-    context = "\n\n".join([doc.page_content for doc in docs])
-    return {"retrieved_context": context}
+
+    print("Documents retrieved:", len(docs))
+
+    # Combine retrieved documents
+    raw_context = "\n\n".join(
+        doc.page_content for doc in docs
+    )
+
+    print("\n========== RAW RETRIEVED CONTEXT ==========")
+    print(raw_context)
+
+    # Map programme to the heading used in the PDF
+    programme_headings = {
+        "BCA": "3.1 BCA Programme Fee",
+        "BBA": "3.2 BBA Programme Fee",
+        "B.Com (H)": "3.3 B.Com (Honours) Programme Fee"
+    }
+
+    heading = programme_headings.get(programme)
+
+    filtered_context = raw_context
+
+    if heading:
+        # Find the selected programme section
+        start = raw_context.find(heading)
+
+        if start != -1:
+
+            # Find the next programme section
+            next_sections = [
+                "3.1 BCA Programme Fee",
+                "3.2 BBA Programme Fee",
+                "3.3 B.Com (Honours) Programme Fee"
+            ]
+
+            end = len(raw_context)
+
+            for section in next_sections:
+                if section == heading:
+                    continue
+
+                section_position = raw_context.find(
+                    section,
+                    start + len(heading)
+                )
+
+                if section_position != -1:
+                    end = min(end, section_position)
+
+            filtered_context = raw_context[start:end]
+
+    print("\n========== FILTERED CONTEXT ==========")
+    print(filtered_context)
+
+    print("\nFiltered context length:", len(filtered_context))
+
+    return {
+        "retrieved_context": filtered_context
+    }
+
+
 
 def general_node(state: State) -> dict:
     """Answers directly using the LLM's own knowledge, no retrieval needed."""
@@ -156,7 +294,12 @@ graph.add_edge(START, "classifier")
 
 graph.add_conditional_edges(
     "classifier",
-    route_query
+    route_query,
+    {
+        "academic_rag": "academic_rag",
+        "fee_rag": "fee_rag",
+        "general": "general"
+    }
 )
 
 # All three paths go to the response node
