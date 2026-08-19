@@ -2,7 +2,8 @@ import os
 from typing import TypedDict, Annotated
 
 import streamlit as st
-from langgraph.graph import StateGraph, START, END, add_messages
+from langgraph.graph import StateGraph, START, END
+from langgraph.graph.message import add_messages
 from langchain_mistralai import ChatMistralAI
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
