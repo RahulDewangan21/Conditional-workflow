@@ -10,3 +10,5 @@ langchain-text-splitters
 chromadb
 pypdf
 python-dotenv
+langchain-huggingface
+sentence-transformers
