@@ -12,3 +12,6 @@ pypdf
 python-dotenv
 langchain-huggingface
 sentence-transformers
+torch
+torchvision
+einops
