@@ -2,18 +2,20 @@ import os
 from typing import TypedDict, Annotated
 from langgraph.graph.message import add_messages
 from langgraph.graph import StateGraph, START, END
-from langchain_groq import ChatGroq
+from langchain_mistralai import ChatMistralAI
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_community.vectorstores import FAISS
+from langchain_community.vectorstores import Chroma
 from dotenv import load_dotenv
 load_dotenv()
 
 
 # Step1 Building the RAG Retriever
 
-embedding = HuggingFaceEmbeddings(model_name = "BAAI/bge-small-en-v1.5")
+embedding = HuggingFaceEmbeddings(
+    model_name="BAAI/bge-small-en-v1.5"
+)
 
 def build_retriever(pdf_path: str):
     loader = PyPDFLoader(pdf_path)
@@ -23,17 +25,17 @@ def build_retriever(pdf_path: str):
 
     chunks = splitter.split_documents(document)
 
-    vectorstore = FAISS.from_documents(chunks,embedding)
+    vectorstore = Chroma.from_documents(chunks,embedding)
 
 
     return vectorstore.as_retriever(search_kwargs = {"k":2})
 
-academic_retriever = build_retriever(pdf_path="academics_handbook.pdf")
-fee_retriever = build_retriever(pdf_path="fee_structure.pdf")
+academic_retriever = build_retriever(pdf_path="academic_regulations.pdf")
+fee_retriever = build_retriever(pdf_path="fee_structures.pdf")
 
 
 
-llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.4)
+llm = ChatMistralAI(model="mistral-small-2603", temperature=0.4)
 
 # Step2 State
 
@@ -41,7 +43,7 @@ class State(TypedDict):
     programme: str   # BBA BCA BCOM
     messages: Annotated[list, add_messages]
     query_type: str
-    retrieved_context = str
+    retrieved_context: str
 
 #  step3 Nodes
 
@@ -79,156 +81,22 @@ def classifier_node(state: State) -> dict:
 
     return {"query_type" : category}
 
+
+
+
 def academic_rag_node(state: State) -> dict:
-    """Retrieves and filters relevant academic information."""
-
+    """Retrieves relevant chunks from the academics handbook."""
     query = state["messages"][-1].content
-    programme = state.get("programme", "Unknown")
-
-    print("\n========== ACADEMIC RAG NODE ==========")
-    print("Original Query:", query)
-    print("Programme:", programme)
-
-    retrieval_query = f"""
-    {programme} college academic rules
-    {query}
-    grading system marking scheme CPI division passing criteria
-    """
-
-    print("Retrieval Query:", retrieval_query)
-
-    docs = academic_retriever.invoke(retrieval_query)
-
-    print("Documents retrieved:", len(docs))
-
-    raw_context = "\n\n".join(
-        doc.page_content for doc in docs
-    )
-
-    for i, doc in enumerate(docs):
-        print(f"\n--- RESULT {i + 1} ---")
-        print(doc.page_content[:1500])
-
-    # ---------------------------------------
-    # Filter grading section when relevant
-    # ---------------------------------------
-
-    grading_keywords = [
-        "marking",
-        "marks",
-        "grading",
-        "grade",
-        "cpi",
-        "division",
-        "passing",
-        "pass"
-    ]
-
-    if any(word in query.lower() for word in grading_keywords):
-
-        start = raw_context.find("4. Grading System")
-
-        if start != -1:
-
-            # Find next major section
-            next_section = raw_context.find(
-                "\n5.",
-                start + len("4. Grading System")
-            )
-
-            if next_section != -1:
-                context = raw_context[start:next_section]
-            else:
-                context = raw_context[start:]
-
-        else:
-            context = raw_context
-
-    else:
-        context = raw_context
-
-    print("\n========== FINAL ACADEMIC CONTEXT ==========")
-    print(context)
-
-    print("\nContext length:", len(context))
-
-    return {
-        "retrieved_context": context
-    }
-
-
+    docs = academic_retriever.invoke(query)
+    context = "\n\n".join([doc.page_content for doc in docs])
+    return {"retrieved_context": context}
 
 def fee_rag_node(state: State) -> dict:
-    """Retrieves and filters the relevant programme fee section."""
-
+    """Retrieves relevant chunks from the fee structure PDF."""
     query = state["messages"][-1].content
-    programme = state.get("programme", "Unknown")
-
-    print("\n========== FEE RAG NODE ==========")
-    print("Original Query:", query)
-    print("Programme:", programme)
-
-    # Retrieve relevant chunks
     docs = fee_retriever.invoke(query)
-
-    print("Documents retrieved:", len(docs))
-
-    # Combine retrieved documents
-    raw_context = "\n\n".join(
-        doc.page_content for doc in docs
-    )
-
-    print("\n========== RAW RETRIEVED CONTEXT ==========")
-    print(raw_context)
-
-    # Map programme to the heading used in the PDF
-    programme_headings = {
-        "BCA": "3.1 BCA Programme Fee",
-        "BBA": "3.2 BBA Programme Fee",
-        "B.Com (H)": "3.3 B.Com (Honours) Programme Fee"
-    }
-
-    heading = programme_headings.get(programme)
-
-    filtered_context = raw_context
-
-    if heading:
-        # Find the selected programme section
-        start = raw_context.find(heading)
-
-        if start != -1:
-
-            # Find the next programme section
-            next_sections = [
-                "3.1 BCA Programme Fee",
-                "3.2 BBA Programme Fee",
-                "3.3 B.Com (Honours) Programme Fee"
-            ]
-
-            end = len(raw_context)
-
-            for section in next_sections:
-                if section == heading:
-                    continue
-
-                section_position = raw_context.find(
-                    section,
-                    start + len(heading)
-                )
-
-                if section_position != -1:
-                    end = min(end, section_position)
-
-            filtered_context = raw_context[start:end]
-
-    print("\n========== FILTERED CONTEXT ==========")
-    print(filtered_context)
-
-    print("\nFiltered context length:", len(filtered_context))
-
-    return {
-        "retrieved_context": filtered_context
-    }
+    context = "\n\n".join([doc.page_content for doc in docs])
+    return {"retrieved_context": context}
 
 
 
@@ -241,16 +109,41 @@ def response_node(state: State) -> dict:
     """Generates the final answer, personalized using the student's programme."""
     query = state["messages"][-1].content
     programme = state.get("programme", "Unknown")
-    context = state.get(
-        "retrieved_context",
-        "NO_RETRIEVAL_NEEDED"
-    )
+    query_type = state.get("query_type", "general")
+    context = state.get("retrieved_context", "NO_RETRIEVAL_NEEDED")
 
+    # Case 1: General question, no retrieval needed
     if context == "NO_RETRIEVAL_NEEDED":
         prompt = (
             f"You are a friendly college assistant talking to a {programme} student. "
             f"Answer this question using your own general knowledge:\n\n{query}"
         )
+
+    # Case 2: Fee search happened but found nothing useful
+    elif context == "NO_FEE_INFO_FOUND_ONLINE":
+        prompt = (
+            f"You are a college assistant. A {programme} student asked about fees, "
+            f"but a search of the college website didn't return clear information "
+            f"for this question: {query}\n\n"
+            f"Politely tell the student that exact fee details aren't available online "
+            f"right now, and suggest they check with the accounts office or the official "
+            f"college website directly."
+        )
+
+    # Case 3: Fee info was scraped from the web (not an official document)
+    elif query_type == "fee":
+        prompt = (
+            f"You are a college assistant helping a {programme} student with a fee question. "
+            f"Use the following information found on the college website to answer.\n\n"
+            f"Context:\n{context}\n\n"
+            f"Question: {query}\n\n"
+            f"Important: This information may come from third-party estimates rather than "
+            f"an official fee circular. Clearly tell the student these are approximate "
+            f"figures and they should confirm exact amounts with the accounts office "
+            f"before making any payment decision."
+        )
+
+    # Case 4: Academic info from your PDF (this one you trust)
     else:
         prompt = (
             f"You are a college assistant helping a {programme} student. "
@@ -316,19 +209,19 @@ app = graph.compile()
 print("Welcome to the College Assistant")
 
 print("Which programme are you in")
-print("1. BCA")
-print("2. BBA")
-print("3. B.Com (H)")
+print("1. BTech")
+print("2. MTech")
+print("3. MBA")
 
 choice = input("\n Enter 1, 2 or 3")
 
 programme_map = {
-    "1": "BCA",
-    "2": "BBA",
-    "3": "B.Com (H)"
+    "1": "BTech",
+    "2": "MTech",
+    "3": "MBA"
 }
 
-student_programme = programme_map.get(choice, "BCA")
+student_programme = programme_map.get(choice, "BTech")
 
 print(f"\nGreat! You're set as a {student_programme} student.")
 
